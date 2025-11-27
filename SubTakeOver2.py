@@ -1,110 +1,106 @@
 #!/usr/bin/env python3
-# SubTakeover 3.0 – versão profissional em Python
-# Mantém lógica didática original, mas 20x mais rápida
-
-import dns.resolver
-import requests
-import concurrent.futures
-import json
+import argparse
+import subprocess
+import os
 import sys
-from datetime import datetime
+import dns.resolver
 
-# =============================
-# Configurações
-# =============================
-TIMEOUT = 4
-THREADS = 50
-TAKEOVER_PATTERNS = [
-    "no such app",
-    "there isn't a github pages site",
-    "does not exist",
-    "not found",
-    "heroku",
-    "unclaimed",
-    "invalid dns",
-    "is not a registered domain",
-    "you can claim",
-]
+def banner():
+    print("""
+______     _   _____     _       _____             ___ 
+|   __|_ _| |_|_   _|___| |_ ___|     |_ _ ___ ___|_  |
+|__   | | | . | | | | .'| '_| -_|  |  | | | -_|  _|  _|
+|_____|___|___| |_| |__,|_,_|___|_____|\\_/|___|_| |___|
 
-results = []
-
-# =============================
-# Funções
-# =============================
-
-def check_subdomain(domain, word):
-    full = f"{word}.{domain}"
-
-    try:
-        # Busca CNAME (igual ao script do professor)
-        answers = dns.resolver.resolve(full, "CNAME", lifetime=TIMEOUT)
-        cname = str(answers[0].target)
-
-        info = {"subdomain": full, "cname": cname, "takeover": False}
-
-        # Detectar takeover via conteúdo HTTP
-        try:
-            r = requests.get(f"http://{full}", timeout=TIMEOUT)
-            html = r.text.lower()
-
-            for pattern in TAKEOVER_PATTERNS:
-                if pattern in html:
-                    info["takeover"] = True
-                    break
-
-        except Exception:
-            pass  # erro HTTP ignorado
-
-        print(f"[FOUND] {full} -> {cname}")
-        if info["takeover"]:
-            print(f"[POSSÍVEL TAKEOVER] {full}")
-
-        results.append(info)
-
-    except Exception:
-        pass  # sem CNAME → ignora
+""")
 
 def load_wordlist(path):
-    with open(path, "r") as f:
-        return [line.strip() for line in f.readlines() if line.strip()]
-
-# =============================
-# Main
-# =============================
-
-def main():
-    if len(sys.argv) < 3:
-        print("Uso: python3 subtakeover.py <dominio> <wordlist>")
+    if path is None:
+        print("[!] Nenhuma wordlist informada. Abortando.")
         sys.exit(1)
 
-    domain = sys.argv[1]
-    wordlist = sys.argv[2]
+    if not os.path.isfile(path):
+        print(f"[!] Wordlist não encontrada: {path}")
+        sys.exit(1)
 
-    words = load_wordlist(wordlist)
+    with open(path, "r") as f:
+        return [line.strip() for line in f if line.strip()]
 
-    print(f"[+] Dominio: {domain}")
-    print(f"[+] Wordlist: {len(words)} entradas")
-    print(f"[+] Threads: {THREADS}")
-    print("[+] Iniciando varredura...\n")
+def resolve_cname(subdomain):
+    try:
+        answers = dns.resolver.resolve(subdomain, "CNAME")
+        for rdata in answers:
+            return str(rdata.target)
+    except:
+        return None
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=THREADS) as executor:
-        executor.map(lambda w: check_subdomain(domain, w), words)
+def check_takeover(cname):
+    """
+    Detecta padrões comuns de subdomain takeover.
+    Basta adicionar fingerprints novos se quiser evoluir o script.
+    """
+    takeover_patterns = {
+        "github.io": "Possível GitHub Pages Takeover",
+        "amazonaws.com": "Possível S3 Takeover",
+        "herokuapp.com": "Possível Heroku Takeover",
+        "azurewebsites.net": "Possível Azure Takeover",
+        "cloudfront.net": "Possível CloudFront Takeover",
+        "fastly.net": "Possível Fastly Takeover",
+        "key.vlab.takeover": "Key encontrada!"
+    }
 
-    # salvar resultado final
-    print("\n[+] Salvando resultados…")
+    for key in takeover_patterns:
+        if key in cname:
+            return takeover_patterns[key]
 
-    with open("subtakeover_results.txt", "w") as f:
-        for r in results:
-            takeover = "TAKEOVER" if r["takeover"] else "OK"
-            f.write(f"{r['subdomain']} -> {r['cname']} [{takeover}]\n")
+    return None
 
-    with open("subtakeover_results.json", "w") as f:
-        json.dump(results, f, indent=4)
+def main():
+    parser = argparse.ArgumentParser(description="Scanner de Subdomain Takeover via CNAME")
+    parser.add_argument("-d", "--domain", required=True, help="Domínio alvo")
+    parser.add_argument("-w", "--wordlist", required=True, help="Wordlist de subdomínios")
+    args = parser.parse_args()
 
-    print("[+] Arquivos salvos:")
-    print("    subtakeover_results.txt")
-    print("    subtakeover_results.json")
-    print("\n[✓] Finalizado.")
+    domain = args.domain.strip()
+    wordlist = load_wordlist(args.wordlist)
+
+    banner()
+    print(f"[+] Domínio: {domain}")
+    print(f"[+] Wordlist: {args.wordlist}")
+    print(f"[+] Total de entradas: {len(wordlist)}")
+    print("-------------------------------------------\n")
+
+    results = []
+
+    for word in wordlist:
+        sub = f"{word}.{domain}"
+        cname = resolve_cname(sub)
+
+        if cname:
+            status = check_takeover(cname)
+            if status:
+                print(f"[!] POSSÍVEL TAKEOVER ENCONTRADO!")
+                print(f"    Subdomínio: {sub}")
+                print(f"    CNAME: {cname}")
+                print(f"    Status: {status}\n")
+                results.append((sub, cname, status))
+            else:
+                print(f"[OK] {sub} -> {cname}")
+        else:
+            print(f"[X] {sub}")
+
+    print("\n===========================================")
+    print("               RESULTADOS")
+    print("===========================================\n")
+
+    if results:
+        for sub, cname, status in results:
+            print(f"[TAKEOVER] {sub} -> {cname} ({status})")
+    else:
+        print("Nenhum subdomain takeover encontrado.")
+
+    print("\n[+] Finalizado.")
+    
 
 if __name__ == "__main__":
     main()
